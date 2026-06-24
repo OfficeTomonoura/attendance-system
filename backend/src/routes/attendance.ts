@@ -1,0 +1,572 @@
+import { Router, Request, Response } from 'express';
+import { PrismaClient } from '@prisma/client';
+
+const router = Router();
+const prisma = new PrismaClient();
+
+// 対象月の従業員一覧と勤怠データを取得
+router.get('/', async (req: Request, res: Response) => {
+  try {
+    const { month } = req.query;
+    if (!month || typeof month !== 'string') {
+      return res.status(400).json({ error: 'month (YYYY-MM) は必須です' });
+    }
+
+    // 対象月の勤怠データを取得
+    const records = await prisma.attendanceRecord.findMany({
+      where: {
+        targetMonth: month,
+      },
+      include: {
+        recordValues: true
+      }
+    });
+
+    const recordEmployeeIds = records.map(r => r.employeeId);
+
+    // 全従業員を取得（論理削除されていない、または対象月にレコードが存在する）
+    const employees = await prisma.employee.findMany({
+      where: {
+        OR: [
+          { isDeleted: false },
+          { id: { in: recordEmployeeIds } }
+        ]
+      },
+      include: {
+        salaryGroup: true
+      },
+      orderBy: { employeeCode: 'asc' }
+    });
+
+    // 対象月のステータスを取得
+    let monthlyStatus = await prisma.monthlyStatus.findUnique({
+      where: { targetMonth: month }
+    });
+
+    // もしステータスが存在しなければ初期状態(draft)として扱う
+    if (!monthlyStatus) {
+      monthlyStatus = {
+        id: '',
+        targetMonth: month,
+        status: 'draft',
+        submittedBy: null,
+        submittedAt: null,
+        approvedBy: null,
+        approvedAt: null,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      };
+    }
+
+    // 従業員ごとにマッピングして返却
+    const employeeData = employees.map(emp => {
+      const record = records.find(r => r.employeeId === emp.id);
+      
+      // 動的フィールドの値をキーバリューでマップする
+      const values: Record<string, string | null> = {};
+      if (record && record.recordValues) {
+        record.recordValues.forEach(rv => {
+          values[rv.attendanceFieldId] = rv.value;
+        });
+      }
+
+      return {
+        employee: emp,
+        recordId: record?.id || null,
+        snapshotSalaryGroupId: record?.snapshotSalaryGroupId || null,
+        values: values,
+      };
+    });
+
+    res.json({
+      monthStatus: monthlyStatus.status,
+      submittedBy: monthlyStatus.submittedBy,
+      submittedAt: monthlyStatus.submittedAt,
+      approvedBy: monthlyStatus.approvedBy,
+      approvedAt: monthlyStatus.approvedAt,
+      data: employeeData
+    });
+  } catch (error) {
+    console.error('Error fetching attendance:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// 入力済み月別一覧取得
+router.get('/list', async (req: Request, res: Response) => {
+  try {
+    const { month } = req.query;
+    if (!month || typeof month !== 'string') {
+      return res.status(400).json({ error: 'month (YYYY-MM) は必須です' });
+    }
+
+    const records = await prisma.attendanceRecord.findMany({
+      where: {
+        targetMonth: month,
+      },
+      include: {
+        employee: true,
+        recordValues: {
+          include: {
+            attendanceField: true
+          }
+        }
+      },
+      orderBy: {
+        employee: {
+          employeeCode: 'asc'
+        }
+      }
+    });
+
+    // 全フィールド定義を取得
+    const fields = await prisma.attendanceField.findMany({
+      orderBy: [{ displayOrder: 'asc' }, { createdAt: 'asc' }]
+    });
+
+    // 全グループ別フィールド紐付けを取得（どのグループがどのフィールドを使うか）
+    const salaryGroupFields = await prisma.salaryGroupField.findMany();
+    // salaryGroupId -> Set<attendanceFieldId> のマップを構築
+    const groupFieldMap = new Map<string, Set<string>>();
+    salaryGroupFields.forEach(sgf => {
+      if (!groupFieldMap.has(sgf.salaryGroupId)) {
+        groupFieldMap.set(sgf.salaryGroupId, new Set());
+      }
+      groupFieldMap.get(sgf.salaryGroupId)!.add(sgf.attendanceFieldId);
+    });
+
+    // 対象月のステータスを取得
+    let monthlyStatus = await prisma.monthlyStatus.findUnique({
+      where: { targetMonth: month }
+    });
+
+    const result = records.map(r => {
+      const values: Record<string, string | null> = {};
+      const valueNames: Record<string, string | null> = {};
+      
+      const rvMap: Record<string, string | null> = {};
+      r.recordValues.forEach(rv => {
+        rvMap[rv.attendanceFieldId] = rv.value;
+      });
+
+      // この従業員の給与規定グループに紐づくフィールドIDセット
+      const groupId = r.snapshotSalaryGroupId || r.employee.salaryGroupId;
+      const linkedFieldIds = groupFieldMap.get(groupId) || new Set<string>();
+
+      fields.forEach(f => {
+        // 共通項目か、または給与規定グループに紐づいている項目のみ値を設定
+        const isApplicable = f.isCommon || linkedFieldIds.has(f.id);
+
+        if (!isApplicable) {
+          // 紐づいていない項目はnullを返す（表示側で「-」を表示）
+          values[f.id] = null;
+          valueNames[f.name] = null;
+          return;
+        }
+
+        const val = rvMap[f.id];
+        let finalVal = val;
+        
+        if (val === undefined || val === null || val === '') {
+          // 紐づいている項目のデフォルト値
+          if (f.fieldType === 'number') finalVal = '0';
+          else if (f.fieldType === 'time') finalVal = '00:00';
+          else finalVal = '';
+        }
+
+        values[f.id] = finalVal;
+        valueNames[f.name] = finalVal;
+      });
+
+      return {
+        employeeCode: r.employee.employeeCode,
+        name: r.employee.name,
+        salaryGroupId: groupId, // フロントエンドが参照できるようにグループIDも返す
+        values: values,
+        valueNames: valueNames, // フィールド名ベースの値マップ
+        updatedAt: r.updatedAt,
+      };
+    });
+
+    res.json({
+      monthStatus: monthlyStatus?.status || 'draft',
+      data: result
+    });
+  } catch (error) {
+    console.error('Error fetching attendance list:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+
+// CSV出力
+router.get('/export', async (req: Request, res: Response) => {
+  try {
+    const { month } = req.query;
+    if (!month || typeof month !== 'string') {
+      return res.status(400).json({ error: 'month (YYYY-MM) は必須です' });
+    }
+
+    // CSV基本列設定を取得（未設定の場合はデフォルト）
+    const DEFAULT_BASE = {
+      employeeCode: { enabled: true, label: 'スタッフコード' },
+      name:         { enabled: true, label: '氏名' },
+      targetMonth:  { enabled: true, label: '対象年月' },
+    };
+    const baseColSetting = await prisma.systemSetting.findUnique({
+      where: { key: 'csv_base_columns' }
+    });
+    const baseCols: typeof DEFAULT_BASE = baseColSetting
+      ? { ...DEFAULT_BASE, ...JSON.parse(baseColSetting.value) }
+      : DEFAULT_BASE;
+
+    // csvEnabled=true のフィールドのみ取得してヘッダーを構築
+    const fields = await prisma.attendanceField.findMany({
+      where: { csvEnabled: true },
+      orderBy: { displayOrder: 'asc' }
+    });
+
+    // 全グループ別フィールド紐付けを取得
+    const salaryGroupFields = await prisma.salaryGroupField.findMany();
+    const groupFieldMap = new Map<string, Set<string>>();
+    salaryGroupFields.forEach(sgf => {
+      if (!groupFieldMap.has(sgf.salaryGroupId)) {
+        groupFieldMap.set(sgf.salaryGroupId, new Set());
+      }
+      groupFieldMap.get(sgf.salaryGroupId)!.add(sgf.attendanceFieldId);
+    });
+    
+    const records = await prisma.attendanceRecord.findMany({
+      where: { targetMonth: month },
+      include: {
+        employee: true,
+        recordValues: {
+          include: { attendanceField: true }
+        }
+      },
+      orderBy: { employee: { employeeCode: 'asc' } }
+    });
+
+    const escapeCsv = (str: any) => `"${String(str ?? '').replace(/"/g, '""')}"`;
+
+    // 有効な基本列のみヘッダーに追加
+    const baseHeaders: string[] = [];
+    if (baseCols.employeeCode.enabled) baseHeaders.push(baseCols.employeeCode.label);
+    if (baseCols.name.enabled)         baseHeaders.push(baseCols.name.label);
+    if (baseCols.targetMonth.enabled)  baseHeaders.push(baseCols.targetMonth.label);
+
+    // csvLabel が設定されていればそれを、なければ name をヘッダーとして使用
+    const fieldHeaders = fields.map(f => f.csvLabel?.trim() || f.name);
+    const headers = [...baseHeaders, ...fieldHeaders].map(escapeCsv);
+    
+    const rows = records.map(r => {
+      const valMap: Record<string, string> = {};
+      r.recordValues.forEach(rv => {
+        valMap[rv.attendanceFieldId] = rv.value ?? '';
+      });
+
+      // この従業員の給与規定グループに紐づくフィールドIDセット
+      const groupId = r.snapshotSalaryGroupId || r.employee.salaryGroupId;
+      const linkedFieldIds = groupFieldMap.get(groupId) || new Set<string>();
+
+      // 有効な基本列の値のみ行に追加
+      const baseValues: string[] = [];
+      if (baseCols.employeeCode.enabled) baseValues.push(escapeCsv(r.employee.employeeCode));
+      if (baseCols.name.enabled)         baseValues.push(escapeCsv(r.employee.name));
+      if (baseCols.targetMonth.enabled)  baseValues.push(escapeCsv(r.targetMonth));
+
+      const fieldValues = fields.map(f => {
+        // 共通項目でも、グループに紐づいている項目でもなければ空文字
+        const isApplicable = f.isCommon || linkedFieldIds.has(f.id);
+        if (!isApplicable) return '';
+
+        const val = valMap[f.id];
+        if (val !== undefined && val !== null && val !== '') {
+          return val;
+        }
+        // 紐づいている項目の未入力デフォルト値
+        if (f.fieldType === 'number') return '0';
+        if (f.fieldType === 'time') return '00:00';
+        return '';
+      });
+
+
+      return [...baseValues, ...fieldValues.map(escapeCsv)].join(',');
+    });
+
+    const csvContent = [headers.join(','), ...rows].join('\r\n');
+    const bom = '\uFEFF';
+    const csvWithBom = bom + csvContent;
+    const filename = `attendance_${month.replace('-', '_')}.csv`;
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(csvWithBom);
+  } catch (error) {
+    console.error('Error exporting CSV:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+
+// 勤怠データの一括保存
+router.post('/save', async (req: Request, res: Response) => {
+  try {
+    const { month, data } = req.body;
+    // data は [{ employeeId: string, values: { [fieldId: string]: string | null } }] の想定
+
+    if (!month || !Array.isArray(data)) {
+      return res.status(400).json({ error: 'month と data(配列) は必須です' });
+    }
+
+    await prisma.$transaction(async (tx) => {
+      // 月のステータスを取得
+      const monthlyStatus = await tx.monthlyStatus.findUnique({
+        where: { targetMonth: month }
+      });
+      const isApproved = monthlyStatus?.status === 'approved';
+
+      for (const item of data) {
+        const { employeeId, values } = item;
+
+        // 承認済みの場合は保存をスキップ（またはエラー）
+        if (isApproved) {
+          continue;
+        }
+
+        // 従業員の現在のsalaryGroupIdを取得
+        const employee = await tx.employee.findUnique({ where: { id: employeeId } });
+        const currentSalaryGroupId = employee?.salaryGroupId || null;
+
+        let record = await tx.attendanceRecord.findUnique({
+          where: {
+            employeeId_targetMonth: {
+              employeeId,
+              targetMonth: month,
+            }
+          }
+        });
+
+        if (!record) {
+          record = await tx.attendanceRecord.create({
+            data: {
+              employeeId,
+              targetMonth: month,
+              snapshotSalaryGroupId: currentSalaryGroupId
+            }
+          });
+        } else if (record.snapshotSalaryGroupId !== currentSalaryGroupId) {
+          // すでにレコードがある場合でも、保存時は現在のグループにスナップショットを更新する
+          record = await tx.attendanceRecord.update({
+            where: { id: record.id },
+            data: { snapshotSalaryGroupId: currentSalaryGroupId }
+          });
+        }
+
+        if (values && typeof values === 'object') {
+          for (const [fieldId, val] of Object.entries(values)) {
+            // AuditLogの記録
+            const currentVal = await tx.attendanceRecordValue.findUnique({
+              where: {
+                attendanceRecordId_attendanceFieldId: {
+                  attendanceRecordId: record.id,
+                  attendanceFieldId: fieldId
+                }
+              }
+            });
+
+            const newValStr = (val !== null && val !== undefined && val !== '') ? String(val) : null;
+            const oldValStr = currentVal?.value || null;
+
+            if (newValStr !== oldValStr) {
+              await tx.attendanceAuditLog.create({
+                data: {
+                  attendanceRecordId: record.id,
+                  fieldName: `Field:${fieldId}`, // fieldIdをそのまま入れるかフィールド名を入れるか
+                  oldValue: oldValStr,
+                  newValue: newValStr,
+                  updatedBy: '開発用モックユーザー'
+                }
+              });
+
+              // Upsert
+              await tx.attendanceRecordValue.upsert({
+                where: {
+                  attendanceRecordId_attendanceFieldId: {
+                    attendanceRecordId: record.id,
+                    attendanceFieldId: fieldId
+                  }
+                },
+                create: {
+                  attendanceRecordId: record.id,
+                  attendanceFieldId: fieldId,
+                  value: newValStr
+                },
+                update: {
+                  value: newValStr
+                }
+              });
+            }
+          }
+        }
+      }
+    });
+
+    res.json({ success: true, message: 'Saved successfully' });
+  } catch (error) {
+    console.error('Error saving attendance:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+import { requireAdmin, AuthRequest } from '../middleware/authMiddleware';
+
+// ステータス変更（提出）
+router.post('/submit', async (req: AuthRequest, res: Response) => {
+  try {
+    const { month } = req.body;
+    if (!month) return res.status(400).json({ error: 'Invalid payload' });
+
+    const submittedBy = req.user?.name || req.user?.loginId || '不明';
+    const submittedAt = new Date();
+
+    await prisma.monthlyStatus.upsert({
+      where: { targetMonth: month },
+      update: { status: 'submitted', submittedBy, submittedAt },
+      create: { targetMonth: month, status: 'submitted', submittedBy, submittedAt }
+    });
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// ステータス変更（提出の取り下げ）
+router.post('/withdraw', async (req: AuthRequest, res: Response) => {
+  try {
+    const { month } = req.body;
+    if (!month) return res.status(400).json({ error: 'Invalid payload' });
+
+    const ms = await prisma.monthlyStatus.findUnique({ where: { targetMonth: month } });
+    if (!ms || ms.status === 'approved') {
+      return res.status(400).json({ error: '承認済みのデータは取り下げできません' });
+    }
+
+    if (ms.status === 'submitted') {
+      await prisma.monthlyStatus.update({
+        where: { targetMonth: month },
+        data: { status: 'draft', submittedBy: null, submittedAt: null }
+      });
+    }
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// 勤怠データの承認 (管理者のみ)
+router.post('/approve', requireAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const { month } = req.body;
+    if (!month) {
+      return res.status(400).json({ error: 'month は必須です' });
+    }
+
+    const ms = await prisma.monthlyStatus.findUnique({ where: { targetMonth: month } });
+    if (!ms || ms.status !== 'submitted') {
+      return res.status(400).json({ error: '提出済みデータのみ承認できます' });
+    }
+
+    const approvedBy = req.user?.name || req.user?.loginId || '不明';
+    const approvedAt = new Date();
+
+    await prisma.monthlyStatus.update({
+      where: { targetMonth: month },
+      data: { status: 'approved', approvedBy, approvedAt }
+    });
+
+    res.json({ success: true, status: 'approved' });
+  } catch (error) {
+    console.error('Error approving attendance:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// 勤怠データの差し戻し (管理者のみ)
+router.post('/reject', requireAdmin, async (req: Request, res: Response) => {
+  try {
+    const { month } = req.body;
+    if (!month) {
+      return res.status(400).json({ error: 'month は必須です' });
+    }
+
+    const ms = await prisma.monthlyStatus.findUnique({ where: { targetMonth: month } });
+    if (!ms || ms.status === 'draft') {
+      return res.status(400).json({ error: '未提出のデータは差戻しできません' });
+    }
+
+    await prisma.monthlyStatus.update({
+      where: { targetMonth: month },
+      data: { status: 'draft' }
+    });
+
+    res.json({ success: true, status: 'draft' });
+  } catch (error) {
+    console.error('Error rejecting attendance:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// 修正履歴一覧取得
+router.get('/history', async (req: Request, res: Response) => {
+  try {
+    const logs = await prisma.attendanceAuditLog.findMany({
+      include: {
+        attendanceRecord: {
+          include: {
+            employee: true
+          }
+        }
+      },
+      orderBy: {
+        updatedAt: 'desc'
+      },
+      take: 100
+    });
+
+    // fieldName が 'Field:xxxxx' のようになっている場合、マスタから名前を引くための準備
+    const fields = await prisma.attendanceField.findMany();
+    const fieldMap = Object.fromEntries(fields.map(f => [f.id, f.name]));
+
+    const result = logs.map(log => {
+      let displayName = log.fieldName;
+      if (log.fieldName.startsWith('Field:')) {
+        const fId = log.fieldName.replace('Field:', '');
+        displayName = fieldMap[fId] || '削除された項目';
+      }
+
+      return {
+        id: log.id,
+        employeeCode: log.attendanceRecord.employee.employeeCode,
+        employeeName: log.attendanceRecord.employee.name,
+        targetMonth: log.attendanceRecord.targetMonth,
+        fieldName: displayName,
+        oldValue: log.oldValue,
+        newValue: log.newValue,
+        updatedBy: log.updatedBy,
+        updatedAt: log.updatedAt
+      };
+    });
+
+    res.json(result);
+  } catch (error) {
+    console.error('Error fetching audit logs:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+export default router;

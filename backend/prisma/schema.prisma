@@ -1,0 +1,183 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model SalaryGroup {
+  id        String     @id @default(uuid())
+  name      String
+  displayOrder Int     @default(0) @map("display_order")
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+  employees Employee[]
+  salaryGroupFields SalaryGroupField[]
+  validationRules   ValidationRule[]
+
+  @@map("salary_groups")
+}
+
+model Employee {
+  id            String      @id @default(uuid())
+  employeeCode  String      @unique
+  name          String
+  salaryGroupId String
+  salaryGroup   SalaryGroup @relation(fields: [salaryGroupId], references: [id])
+  isDeleted         Boolean            @default(false)
+  paidLeaveBalance  Float              @default(0) @map("paid_leave_balance")
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  attendanceRecords AttendanceRecord[]
+
+  @@map("employees")
+}
+
+model AttendanceRecord {
+  id                    String   @id @default(uuid())
+  employeeId            String   @map("employee_id")
+  targetMonth           String   @map("target_month")
+  snapshotSalaryGroupId String?  @map("snapshot_salary_group_id")
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+
+  employee     Employee                @relation(fields: [employeeId], references: [id])
+  values       AttendanceValue?
+  auditLogs    AttendanceAuditLog[]
+  recordValues AttendanceRecordValue[]
+
+  @@unique([employeeId, targetMonth])
+  @@map("attendance_records")
+}
+
+model AttendanceValue {
+  id                 String   @id @default(uuid())
+  attendanceRecordId String   @unique @map("attendance_record_id")
+  scheduledWorkDays  Float?   @map("scheduled_work_days")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  attendanceRecord AttendanceRecord @relation(fields: [attendanceRecordId], references: [id], onDelete: Cascade)
+
+  @@map("attendance_values")
+}
+
+model AttendanceAuditLog {
+  id                 String   @id @default(uuid())
+  attendanceRecordId String   @map("attendance_record_id")
+  fieldName          String   @map("field_name")
+  oldValue           String?  @map("old_value")
+  newValue           String?  @map("new_value")
+  updatedBy          String   @map("updated_by")
+  updatedAt          DateTime @default(now()) @map("updated_at")
+
+  attendanceRecord AttendanceRecord @relation(fields: [attendanceRecordId], references: [id], onDelete: Cascade)
+
+  @@map("attendance_audit_logs")
+}
+
+model ValidationRule {
+  id                String   @id @default(uuid())
+  salaryGroupId     String   @map("salary_group_id")
+  attendanceFieldId String   @map("attendance_field_id")
+  operator          String   // "NOT_EMPTY", "==", "!=", ">", "<", ">=", "<="
+  referenceValue    String?  @map("reference_value")
+  errorMessage      String   @map("error_message")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  salaryGroup     SalaryGroup     @relation(fields: [salaryGroupId], references: [id], onDelete: Cascade)
+  attendanceField AttendanceField @relation(fields: [attendanceFieldId], references: [id], onDelete: Cascade)
+
+  @@map("validation_rules")
+}
+
+model AttendanceField {
+  id        String   @id @default(uuid())
+  name      String
+  fieldType String   @default("number") @map("field_type") // number, text, time etc.
+  isCommon  Boolean  @default(false) @map("is_common")
+  displayOrder Int   @default(0) @map("display_order")
+  csvEnabled Boolean @default(true) @map("csv_enabled")
+  csvLabel   String? @map("csv_label")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  salaryGroupFields SalaryGroupField[]
+  recordValues      AttendanceRecordValue[]
+  validationRules   ValidationRule[]
+
+  @@map("attendance_fields")
+}
+
+
+model SalaryGroupField {
+  id                String   @id @default(uuid())
+  salaryGroupId     String   @map("salary_group_id")
+  attendanceFieldId String   @map("attendance_field_id")
+  required          Boolean  @default(false)
+  displayOrder      Int      @default(0) @map("display_order")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  salaryGroup     SalaryGroup     @relation(fields: [salaryGroupId], references: [id], onDelete: Cascade)
+  attendanceField AttendanceField @relation(fields: [attendanceFieldId], references: [id], onDelete: Cascade)
+
+  @@unique([salaryGroupId, attendanceFieldId])
+  @@map("salary_group_fields")
+}
+
+model AttendanceRecordValue {
+  id                 String   @id @default(uuid())
+  attendanceRecordId String   @map("attendance_record_id")
+  attendanceFieldId  String   @map("attendance_field_id")
+  value              String?  // String形式で保存し、アプリケーション側でパースする
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  attendanceRecord AttendanceRecord @relation(fields: [attendanceRecordId], references: [id], onDelete: Cascade)
+  attendanceField  AttendanceField  @relation(fields: [attendanceFieldId], references: [id], onDelete: Cascade)
+
+  @@unique([attendanceRecordId, attendanceFieldId])
+  @@map("attendance_record_values")
+}
+
+model MonthlyStatus {
+  id           String    @id @default(uuid())
+  targetMonth  String    @unique @map("target_month")
+  status       String    @default("draft") // "draft" | "submitted" | "approved"
+  submittedBy  String?   @map("submitted_by")   // 提出したユーザー名
+  submittedAt  DateTime? @map("submitted_at")   // 提出日時
+  approvedBy   String?   @map("approved_by")    // 承認したユーザー名
+  approvedAt   DateTime? @map("approved_at")    // 承認日時
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  @@map("monthly_statuses")
+}
+
+
+model User {
+  id           String   @id @default(uuid())
+  loginId      String   @unique @map("login_id")
+  passwordHash String   @map("password_hash")
+  role         String   @default("GENERAL") // ADMIN or GENERAL
+  name         String
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@map("users")
+}
+
+model SystemSetting {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  value     String   // JSON文字列として保存
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("system_settings")
+}
