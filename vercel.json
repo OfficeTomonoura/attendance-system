@@ -1,34 +1,13 @@
 {
   "version": 2,
-  "builds": [
-    {
-      "src": "backend/src/index.ts",
-      "use": "@vercel/node",
-      "config": {
-        "includeFiles": ["backend/prisma/schema.prisma"]
-      }
+  "experimentalServices": {
+    "frontend": {
+      "entrypoint": "frontend",
+      "routePrefix": "/"
     },
-    {
-      "src": "frontend/package.json",
-      "use": "@vercel/static-build"
+    "backend": {
+      "entrypoint": "backend/src/index.ts",
+      "routePrefix": "/api"
     }
-  ],
-  "routes": [
-    {
-      "src": "/api/(.*)",
-      "dest": "backend/src/index.ts"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "frontend/$1",
-      "continue": true
-    },
-    {
-      "handle": "filesystem"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "frontend/index.html"
-    }
-  ]
+  }
 }
