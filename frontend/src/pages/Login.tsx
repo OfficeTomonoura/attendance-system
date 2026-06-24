@@ -30,7 +30,11 @@ export default function Login() {
       }
     } catch (err: any) {
       console.error(err);
-      setErrorMsg(err.response?.data?.error || 'ログインに失敗しました');
+      const errorData = err.response?.data?.error;
+      const msg = typeof errorData === 'string' 
+        ? errorData 
+        : (errorData?.message || (errorData ? JSON.stringify(errorData) : 'ログインに失敗しました'));
+      setErrorMsg(msg);
     } finally {
       setLoading(false);
     }
