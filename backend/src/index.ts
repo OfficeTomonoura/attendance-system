@@ -24,22 +24,22 @@ import systemSettingsRoutes from './routes/system-settings';
 import { authenticateToken, requireAdmin } from './middleware/authMiddleware';
 
 // 認証不要のルート
-app.use('/api/auth', authRoutes);
+app.use(['/api/auth', '/auth'], authRoutes);
 
 // 認証必須のルート
-app.use('/api/attendance', authenticateToken, attendanceRoutes);
-app.use('/api/fields', authenticateToken, fieldsRoutes);
-app.use('/api/salary-groups', authenticateToken, salaryGroupRoutes);
-app.use('/api/salary-group-fields', authenticateToken, salaryGroupFieldsRoutes);
-app.use('/api/validation-rules', authenticateToken, validationRulesRoutes);
+app.use(['/api/attendance', '/attendance'], authenticateToken, attendanceRoutes);
+app.use(['/api/fields', '/fields'], authenticateToken, fieldsRoutes);
+app.use(['/api/salary-groups', '/salary-groups'], authenticateToken, salaryGroupRoutes);
+app.use(['/api/salary-group-fields', '/salary-group-fields'], authenticateToken, salaryGroupFieldsRoutes);
+app.use(['/api/validation-rules', '/validation-rules'], authenticateToken, validationRulesRoutes);
 
 // 管理者権限が必須のルート
-app.use('/api/users', usersRoutes); // usersRoutes内で適用済み
-app.use('/api/employees', authenticateToken, requireAdmin, employeeRoutes);
-app.use('/api/system-settings', authenticateToken, requireAdmin, systemSettingsRoutes);
+app.use(['/api/users', '/users'], usersRoutes); // usersRoutes内で適用済み
+app.use(['/api/employees', '/employees'], authenticateToken, requireAdmin, employeeRoutes);
+app.use(['/api/system-settings', '/system-settings'], authenticateToken, requireAdmin, systemSettingsRoutes);
 
 // ヘルスチェックAPI
-app.get('/api/health', (req: Request, res: Response) => {
+app.get(['/api/health', '/health'], (req: Request, res: Response) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
