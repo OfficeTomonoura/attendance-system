@@ -578,7 +578,7 @@ export default function AttendanceInput() {
             </DndContext>
           </div>
         </div>
-      )}
+      ))}
 
       {/* VALIDATION ERROR MODAL */}
       {showValidationModal && (
