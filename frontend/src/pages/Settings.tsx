@@ -360,7 +360,7 @@ export default function Settings() {
         const isCommon = f.isCommon || false;
         return {
           attendanceFieldId: f.id,
-          required: existing ? existing.required : false,
+          required: isCommon ? false : (existing ? existing.required : false),
           displayOrder: existing ? existing.displayOrder : 999,
           isLinked: isCommon || !!existing, // 共通項目は自動的に表示ON
           isCommon
