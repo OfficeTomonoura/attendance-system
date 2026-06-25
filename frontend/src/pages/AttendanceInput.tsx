@@ -284,65 +284,32 @@ export default function AttendanceInput() {
     }));
   };
 
-  const handleSave = async () => {
-    setErrorMsg('');
-    setSuccessMsg('');
-
-    // 1. 必須項目（required）の自動入力チェック
-    const errors: string[] = [];
+  // 共通のバリデーション・必須入力チェック処理
+  const validateRecords = (): { employeeName: string; errorMessage: string; }[] => {
+    const errors: { employeeName: string; errorMessage: string; }[] = [];
     const targetRecords = activeGroupId === 'all' 
       ? records 
       : records.filter(r => (r.snapshotSalaryGroupId || r.employee.salaryGroupId) === activeGroupId);
 
+    // 1. 必須項目（required）の自動入力チェック
     for (const r of targetRecords) {
       const groupId = r.snapshotSalaryGroupId || r.employee.salaryGroupId;
-      // この従業員の給与規定グループに紐づく、かつ必須項目（required）を抽出
       const reqFields = allGroupFields.filter(gf => gf.salaryGroupId === groupId && gf.required);
 
       for (const gf of reqFields) {
-        // 現在の編集値、なければ既存値
         const val = editValues[r.employee.id]?.[gf.attendanceFieldId] ?? r.values[gf.attendanceFieldId] ?? '';
-        
         if (val === undefined || val === null || String(val).trim() === '') {
           const fieldName = gf.attendanceField?.name || '不明な項目';
-          errors.push(`${r.employee.name}さんの「${fieldName}」は必須入力項目です`);
+          errors.push({
+            employeeName: r.employee.name,
+            errorMessage: `「${fieldName}」は必須入力項目です`
+          });
         }
       }
     }
 
-    if (errors.length > 0) {
-      setErrorMsg(errors.join(' / '));
-      return; // 必須項目エラーがある場合は保存をブロック
-    }
-
-    setIsSaving(true);
-    try {
-      // 保存対象のデータを構築 [{ employeeId, values: { fieldId: val } }]
-      const payload = targetRecords.map(r => ({
-        employeeId: r.employee.id,
-        values: editValues[r.employee.id] || {}
-      }));
-
-      await api.post('/attendance/save', {
-        month,
-        data: payload
-      });
-      
-      setSuccessMsg('保存しました');
-      setIsEditing(false);
-      fetchAttendance(false); // メッセージを消さずに再取得して反映
-    } catch (err) {
-      console.error('Error saving attendance:', err);
-      setErrorMsg('保存に失敗しました');
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  const handleSubmitAll = async () => {
-    // 提出前にバリデーション評価
-    const errors: {employeeName: string, errorMessage: string}[] = [];
-    for (const record of records) {
+    // 2. バリデーションルールによるチェック (所定労働日数 = 総労働日数 + 欠勤日数 + 有休日数 など)
+    for (const record of targetRecords) {
       const groupId = record.snapshotSalaryGroupId || record.employee.salaryGroupId;
       const rules = validationRules.filter(r => r.salaryGroupId === groupId);
       
@@ -380,6 +347,52 @@ export default function AttendanceInput() {
         }
       }
     }
+
+    return errors;
+  };
+
+  const handleSave = async () => {
+    setErrorMsg('');
+    setSuccessMsg('');
+
+    // バリデーションを実行
+    const validationErrors = validateRecords();
+    if (validationErrors.length > 0) {
+      setErrorMsg(validationErrors.map(e => `${e.employeeName}: ${e.errorMessage}`).join(' / '));
+      return; // バリデーションエラーがある場合は保存をブロック
+    }
+
+    setIsSaving(true);
+    try {
+      const targetRecords = activeGroupId === 'all' 
+        ? records 
+        : records.filter(r => (r.snapshotSalaryGroupId || r.employee.salaryGroupId) === activeGroupId);
+
+      // 保存対象のデータを構築 [{ employeeId, values: { fieldId: val } }]
+      const payload = targetRecords.map(r => ({
+        employeeId: r.employee.id,
+        values: editValues[r.employee.id] || {}
+      }));
+
+      await api.post('/attendance/save', {
+        month,
+        data: payload
+      });
+      
+      setSuccessMsg('保存しました');
+      setIsEditing(false);
+      fetchAttendance(false); // メッセージを消さずに再取得して反映
+    } catch (err) {
+      console.error('Error saving attendance:', err);
+      setErrorMsg('保存に失敗しました');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleSubmitAll = async () => {
+    // 提出前にバリデーション評価
+    const errors = validateRecords();
 
     if (errors.length > 0) {
       setValidationErrors(errors);
