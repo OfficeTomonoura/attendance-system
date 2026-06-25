@@ -570,15 +570,7 @@ export default function AttendanceInput() {
                     >
                       {isSaving ? (
                         <>
-                          <span className="spinner-mini" style={{
-                            width: '16px',
-                            height: '16px',
-                            border: '2px solid rgba(255,255,255,0.3)',
-                            borderTop: '2px solid white',
-                            borderRadius: '50%',
-                            display: 'inline-block',
-                            animation: 'spin 1s linear infinite'
-                          }} />
+                          <span className="spinner-mini" />
                           保存中...
                         </>
                       ) : (
