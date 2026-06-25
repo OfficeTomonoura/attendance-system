@@ -285,16 +285,39 @@ export default function AttendanceInput() {
   };
 
   const handleSave = async () => {
-    setIsSaving(true);
     setErrorMsg('');
     setSuccessMsg('');
+
+    // 1. 必須項目（required）の自動入力チェック
+    const errors: string[] = [];
+    const targetRecords = activeGroupId === 'all' 
+      ? records 
+      : records.filter(r => (r.snapshotSalaryGroupId || r.employee.salaryGroupId) === activeGroupId);
+
+    for (const r of targetRecords) {
+      const groupId = r.snapshotSalaryGroupId || r.employee.salaryGroupId;
+      // この従業員の給与規定グループに紐づく、かつ必須項目（required）を抽出
+      const reqFields = allGroupFields.filter(gf => gf.salaryGroupId === groupId && gf.required);
+
+      for (const gf of reqFields) {
+        // 現在の編集値、なければ既存値
+        const val = editValues[r.employee.id]?.[gf.attendanceFieldId] ?? r.values[gf.attendanceFieldId] ?? '';
+        
+        if (val === undefined || val === null || String(val).trim() === '') {
+          const fieldName = gf.attendanceField?.name || '不明な項目';
+          errors.push(`${r.employee.name}さんの「${fieldName}」は必須入力項目です`);
+        }
+      }
+    }
+
+    if (errors.length > 0) {
+      setErrorMsg(errors.join(' / '));
+      return; // 必須項目エラーがある場合は保存をブロック
+    }
+
+    setIsSaving(true);
     try {
       // 保存対象のデータを構築 [{ employeeId, values: { fieldId: val } }]
-      // アクティブなグループの従業員のみを対象とする
-      const targetRecords = activeGroupId === 'all' 
-        ? records 
-        : records.filter(r => (r.snapshotSalaryGroupId || r.employee.salaryGroupId) === activeGroupId);
-      
       const payload = targetRecords.map(r => ({
         employeeId: r.employee.id,
         values: editValues[r.employee.id] || {}
