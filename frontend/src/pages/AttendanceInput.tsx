@@ -108,6 +108,43 @@ export default function AttendanceInput() {
   const [validationErrors, setValidationErrors] = useState<{employeeName: string, errorMessage: string}[]>([]);
   const [showValidationModal, setShowValidationModal] = useState(false);
 
+  const lockTimerRef = React.useRef<any>(null);
+  const lockedMonthRef = React.useRef<string | null>(null);
+
+  // ロック解除処理
+  const releaseLock = async (monthToUnlock: string) => {
+    try {
+      await api.post('/attendance/unlock', { month: monthToUnlock });
+    } catch (err) {
+      console.error('Failed to unlock month:', monthToUnlock, err);
+    }
+  };
+
+  // タイマークリアとロック解除
+  const clearLockAndTimer = async () => {
+    if (lockTimerRef.current) {
+      clearInterval(lockTimerRef.current);
+      lockTimerRef.current = null;
+    }
+    if (lockedMonthRef.current) {
+      const prevLockedMonth = lockedMonthRef.current;
+      lockedMonthRef.current = null;
+      await releaseLock(prevLockedMonth);
+    }
+  };
+
+  // 画面アンマウント時のクリーンアップ
+  useEffect(() => {
+    return () => {
+      if (lockTimerRef.current) {
+        clearInterval(lockTimerRef.current);
+      }
+      if (lockedMonthRef.current) {
+        releaseLock(lockedMonthRef.current);
+      }
+    };
+  }, []);
+
   // --- DND Sensors ---
   const sensors = useSensors(
     useSensor(PointerSensor),
@@ -142,12 +179,42 @@ export default function AttendanceInput() {
     setLoading(true);
     setErrorMsg('');
     setSuccessMsg('');
+    setRecords([]);
     try {
+      // 1. 古いロックのクリアと、対象月へのロック要求
+      await clearLockAndTimer();
+
+      try {
+        await api.post('/attendance/lock', { month });
+        lockedMonthRef.current = month;
+      } catch (lockErr: any) {
+        const message = lockErr.response?.data?.message || '他のユーザーが入力中か、ロックの取得に失敗しました';
+        setErrorMsg(message);
+        setLoading(false);
+        return; // ロックが取れない場合はデータ取得に進まない
+      }
+
+      // 2. データ取得
       const res = await api.get(`/attendance?month=${month}`);
       setRecords(res.data.data);
       setMonthStatus(res.data.monthStatus);
       setIsEditing(false);
       setEditValues({});
+
+      // 3. 自動延長（ハートビート）タイマーを起動 (1分間隔)
+      lockTimerRef.current = setInterval(async () => {
+        if (!lockedMonthRef.current) return;
+        try {
+          await api.post('/attendance/lock', { month: lockedMonthRef.current });
+        } catch (heartbeatErr: any) {
+          console.error('Heartbeat lock extension failed:', heartbeatErr);
+          if (heartbeatErr.response?.status === 409) {
+            alert('別のユーザーが編集を開始したか、セッションがタイムアウトしたためロックが解除されました。画面をリロードします。');
+            window.location.reload();
+          }
+        }
+      }, 60 * 1000);
+
     } catch (err) {
       console.error('Error fetching attendance:', err);
       setErrorMsg('データの取得に失敗しました');

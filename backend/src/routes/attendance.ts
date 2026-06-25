@@ -569,4 +569,113 @@ router.get('/history', async (req: Request, res: Response) => {
   }
 });
 
+// 勤怠データの編集ロック取得・延長（ハートビート）
+router.post('/lock', async (req: AuthRequest, res: Response) => {
+  try {
+    const { month } = req.body;
+    const userId = req.user?.id;
+    const userName = req.user?.name || '他のユーザー';
+
+    if (!month || typeof month !== 'string') {
+      return res.status(400).json({ error: 'month (YYYY-MM) は必須です' });
+    }
+    if (!userId) {
+      return res.status(401).json({ error: '認証情報が不足しています' });
+    }
+
+    const now = new Date();
+    const lockDurationMs = 3 * 60 * 1000; // 有効期限: 3分
+    const expiresAt = new Date(now.getTime() + lockDurationMs);
+
+    // 1. 期限切れの古いロックをクリーンアップ
+    await prisma.editLock.deleteMany({
+      where: {
+        expiresAt: { lt: now }
+      }
+    });
+
+    // 2. 対象月のロックを確認
+    const existingLock = await prisma.editLock.findUnique({
+      where: { targetMonth: month }
+    });
+
+    if (existingLock) {
+      // 自分がロックを保持している場合 ➔ 延長する
+      if (existingLock.userId === userId) {
+        const updatedLock = await prisma.editLock.update({
+          where: { targetMonth: month },
+          data: { expiresAt }
+        });
+        return res.json({ success: true, message: 'ロックを延長しました', lock: updatedLock });
+      } else {
+        // 他のユーザーがロックを保持している場合 ➔ エラー
+        return res.status(409).json({
+          error: 'conflict',
+          message: `${existingLock.userName}さんが入力中です`
+        });
+      }
+    }
+
+    // 3. 新規ロックを取得
+    try {
+      const newLock = await prisma.editLock.create({
+        data: {
+          targetMonth: month,
+          userId,
+          userName,
+          expiresAt
+        }
+      });
+      return res.json({ success: true, message: 'ロックを取得しました', lock: newLock });
+    } catch (createError: any) {
+      // 一意性制約違反（P2002）➔ 同時リクエストにより他人が先にインサートした場合
+      if (createError.code === 'P2002') {
+        const doubleCheckLock = await prisma.editLock.findUnique({
+          where: { targetMonth: month }
+        });
+        return res.status(409).json({
+          error: 'conflict',
+          message: `${doubleCheckLock?.userName || '他のユーザー'}さんが入力中です`
+        });
+      }
+      throw createError;
+    }
+  } catch (error) {
+    console.error('Error locking target month:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// 勤怠データの編集ロック解除
+router.post('/unlock', async (req: AuthRequest, res: Response) => {
+  try {
+    const { month } = req.body;
+    const userId = req.user?.id;
+
+    if (!month || typeof month !== 'string') {
+      return res.status(400).json({ error: 'month (YYYY-MM) は必須です' });
+    }
+    if (!userId) {
+      return res.status(401).json({ error: '認証情報が不足しています' });
+    }
+
+    // 自分が保持しているロックがあれば削除
+    const lock = await prisma.editLock.findUnique({
+      where: { targetMonth: month }
+    });
+
+    if (lock && lock.userId === userId) {
+      await prisma.editLock.delete({
+        where: { targetMonth: month }
+      });
+      return res.json({ success: true, message: 'ロックを解除しました' });
+    }
+
+    res.json({ success: true, message: 'ロックは存在しないか、既に解除されています' });
+  } catch (error) {
+    console.error('Error unlocking target month:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
 export default router;
