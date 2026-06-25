@@ -83,6 +83,7 @@ export default function AttendanceInput() {
   });
   
   const [loading, setLoading] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
 
@@ -282,6 +283,9 @@ export default function AttendanceInput() {
   };
 
   const handleSave = async () => {
+    setIsSaving(true);
+    setErrorMsg('');
+    setSuccessMsg('');
     try {
       // 保存対象のデータを構築 [{ employeeId, values: { fieldId: val } }]
       // アクティブなグループの従業員のみを対象とする
@@ -305,6 +309,8 @@ export default function AttendanceInput() {
     } catch (err) {
       console.error('Error saving attendance:', err);
       setErrorMsg('保存に失敗しました');
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -518,8 +524,30 @@ export default function AttendanceInput() {
                     <button className="btn-secondary" onClick={handleCancelEdit} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                       <X size={18} /> キャンセル
                     </button>
-                    <button className="btn-primary" onClick={handleSave} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                      <Save size={18} /> 保存する
+                    <button 
+                      className="btn-primary" 
+                      onClick={handleSave} 
+                      disabled={isSaving}
+                      style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', opacity: isSaving ? 0.7 : 1 }}
+                    >
+                      {isSaving ? (
+                        <>
+                          <span className="spinner-mini" style={{
+                            width: '16px',
+                            height: '16px',
+                            border: '2px solid rgba(255,255,255,0.3)',
+                            borderTop: '2px solid white',
+                            borderRadius: '50%',
+                            display: 'inline-block',
+                            animation: 'spin 1s linear infinite'
+                          }} />
+                          保存中...
+                        </>
+                      ) : (
+                        <>
+                          <Save size={18} /> 保存する
+                        </>
+                      )}
                     </button>
                   </>
                 ) : (
