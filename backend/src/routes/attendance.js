@@ -288,90 +288,88 @@ router.post('/save', async (req, res) => {
         if (!month || !Array.isArray(data)) {
             return res.status(400).json({ error: 'month と data(配列) は必須です' });
         }
-        await prisma.$transaction(async (tx) => {
-            // 月のステータスを取得
-            const monthlyStatus = await tx.monthlyStatus.findUnique({
-                where: { targetMonth: month }
-            });
-            const isApproved = monthlyStatus?.status === 'approved';
-            for (const item of data) {
-                const { employeeId, values } = item;
-                // 承認済みの場合は保存をスキップ（またはエラー）
-                if (isApproved) {
-                    continue;
+        // トランザクションを外し、通常の順次クエリ実行にする（PgBouncerでの競合回避）
+        const monthlyStatus = await prisma.monthlyStatus.findUnique({
+            where: { targetMonth: month }
+        });
+        const isApproved = monthlyStatus?.status === 'approved';
+        for (const item of data) {
+            const { employeeId, values } = item;
+            // 承認済みの場合は保存をスキップ（またはエラー）
+            if (isApproved) {
+                continue;
+            }
+            // 従業員の現在のsalaryGroupIdを取得
+            const employee = await prisma.employee.findUnique({ where: { id: employeeId } });
+            const currentSalaryGroupId = employee?.salaryGroupId || null;
+            let record = await prisma.attendanceRecord.findUnique({
+                where: {
+                    employeeId_targetMonth: {
+                        employeeId,
+                        targetMonth: month,
+                    }
                 }
-                // 従業員の現在のsalaryGroupIdを取得
-                const employee = await tx.employee.findUnique({ where: { id: employeeId } });
-                const currentSalaryGroupId = employee?.salaryGroupId || null;
-                let record = await tx.attendanceRecord.findUnique({
-                    where: {
-                        employeeId_targetMonth: {
-                            employeeId,
-                            targetMonth: month,
-                        }
+            });
+            if (!record) {
+                record = await prisma.attendanceRecord.create({
+                    data: {
+                        employeeId,
+                        targetMonth: month,
+                        snapshotSalaryGroupId: currentSalaryGroupId
                     }
                 });
-                if (!record) {
-                    record = await tx.attendanceRecord.create({
-                        data: {
-                            employeeId,
-                            targetMonth: month,
-                            snapshotSalaryGroupId: currentSalaryGroupId
+            }
+            else if (record.snapshotSalaryGroupId !== currentSalaryGroupId) {
+                // すでにレコードがある場合でも、保存時は現在のグループにスナップショットを更新する
+                record = await prisma.attendanceRecord.update({
+                    where: { id: record.id },
+                    data: { snapshotSalaryGroupId: currentSalaryGroupId }
+                });
+            }
+            if (values && typeof values === 'object') {
+                for (const [fieldId, val] of Object.entries(values)) {
+                    // AuditLogの記録
+                    const currentVal = await prisma.attendanceRecordValue.findUnique({
+                        where: {
+                            attendanceRecordId_attendanceFieldId: {
+                                attendanceRecordId: record.id,
+                                attendanceFieldId: fieldId
+                            }
                         }
                     });
-                }
-                else if (record.snapshotSalaryGroupId !== currentSalaryGroupId) {
-                    // すでにレコードがある場合でも、保存時は現在のグループにスナップショットを更新する
-                    record = await tx.attendanceRecord.update({
-                        where: { id: record.id },
-                        data: { snapshotSalaryGroupId: currentSalaryGroupId }
-                    });
-                }
-                if (values && typeof values === 'object') {
-                    for (const [fieldId, val] of Object.entries(values)) {
-                        // AuditLogの記録
-                        const currentVal = await tx.attendanceRecordValue.findUnique({
+                    const newValStr = (val !== null && val !== undefined && val !== '') ? String(val) : null;
+                    const oldValStr = currentVal?.value || null;
+                    if (newValStr !== oldValStr) {
+                        await prisma.attendanceAuditLog.create({
+                            data: {
+                                attendanceRecordId: record.id,
+                                fieldName: `Field:${fieldId}`, // fieldIdをそのまま入れるかフィールド名を入れるか
+                                oldValue: oldValStr,
+                                newValue: newValStr,
+                                updatedBy: '開発用モックユーザー'
+                            }
+                        });
+                        // Upsert
+                        await prisma.attendanceRecordValue.upsert({
                             where: {
                                 attendanceRecordId_attendanceFieldId: {
                                     attendanceRecordId: record.id,
                                     attendanceFieldId: fieldId
                                 }
+                            },
+                            create: {
+                                attendanceRecordId: record.id,
+                                attendanceFieldId: fieldId,
+                                value: newValStr
+                            },
+                            update: {
+                                value: newValStr
                             }
                         });
-                        const newValStr = (val !== null && val !== undefined && val !== '') ? String(val) : null;
-                        const oldValStr = currentVal?.value || null;
-                        if (newValStr !== oldValStr) {
-                            await tx.attendanceAuditLog.create({
-                                data: {
-                                    attendanceRecordId: record.id,
-                                    fieldName: `Field:${fieldId}`, // fieldIdをそのまま入れるかフィールド名を入れるか
-                                    oldValue: oldValStr,
-                                    newValue: newValStr,
-                                    updatedBy: '開発用モックユーザー'
-                                }
-                            });
-                            // Upsert
-                            await tx.attendanceRecordValue.upsert({
-                                where: {
-                                    attendanceRecordId_attendanceFieldId: {
-                                        attendanceRecordId: record.id,
-                                        attendanceFieldId: fieldId
-                                    }
-                                },
-                                create: {
-                                    attendanceRecordId: record.id,
-                                    attendanceFieldId: fieldId,
-                                    value: newValStr
-                                },
-                                update: {
-                                    value: newValStr
-                                }
-                            });
-                        }
                     }
                 }
             }
-        });
+        }
         res.json({ success: true, message: 'Saved successfully' });
     }
     catch (error) {
