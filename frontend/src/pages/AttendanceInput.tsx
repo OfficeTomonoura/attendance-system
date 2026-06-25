@@ -176,10 +176,12 @@ export default function AttendanceInput() {
     }
   };
 
-  const fetchAttendance = async () => {
+  const fetchAttendance = async (clearMessages = true) => {
     setLoading(true);
-    setErrorMsg('');
-    setSuccessMsg('');
+    if (clearMessages) {
+      setErrorMsg('');
+      setSuccessMsg('');
+    }
     setRecords([]);
     try {
       // 1. 古いロックのクリアと、対象月へのロック要求
@@ -305,7 +307,7 @@ export default function AttendanceInput() {
       
       setSuccessMsg('保存しました');
       setIsEditing(false);
-      fetchAttendance(); // 再取得して反映
+      fetchAttendance(false); // メッセージを消さずに再取得して反映
     } catch (err) {
       console.error('Error saving attendance:', err);
       setErrorMsg('保存に失敗しました');
@@ -417,7 +419,7 @@ export default function AttendanceInput() {
             disabled={isEditing}
           />
         </div>
-        <button className="btn-primary" onClick={fetchAttendance} disabled={isEditing || loading}>
+        <button className="btn-primary" onClick={() => fetchAttendance()} disabled={isEditing || loading}>
           <Search size={16} style={{ marginRight: '0.5rem' }}/> 
           {loading ? '検索中...' : '検索'}
         </button>
