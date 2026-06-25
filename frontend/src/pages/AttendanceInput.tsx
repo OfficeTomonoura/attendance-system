@@ -282,7 +282,6 @@ export default function AttendanceInput() {
   };
 
   const handleSave = async () => {
-    console.log('handleSave clicked!');
     try {
       // 保存対象のデータを構築 [{ employeeId, values: { fieldId: val } }]
       // アクティブなグループの従業員のみを対象とする
@@ -290,20 +289,16 @@ export default function AttendanceInput() {
         ? records 
         : records.filter(r => (r.snapshotSalaryGroupId || r.employee.salaryGroupId) === activeGroupId);
       
-      console.log('targetRecords:', targetRecords);
       const payload = targetRecords.map(r => ({
         employeeId: r.employee.id,
         values: editValues[r.employee.id] || {}
       }));
-
-      console.log('payload to save:', payload);
 
       await api.post('/attendance/save', {
         month,
         data: payload
       });
       
-      console.log('api.post /save completed successfully!');
       setSuccessMsg('保存しました');
       setIsEditing(false);
       fetchAttendance(); // 再取得して反映
