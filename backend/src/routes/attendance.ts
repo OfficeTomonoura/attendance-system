@@ -352,22 +352,22 @@ router.post('/save', async (req: Request, res: Response) => {
     // 4. 不足している勤怠レコードを特定して一括作成
     const missingEmployeeIds = employeeIds.filter(empId => !recordMap.has(empId));
     if (missingEmployeeIds.length > 0) {
-      await Promise.all(
-        missingEmployeeIds.map(async (empId) => {
-          const emp = employeeMap.get(empId);
-          const newRec = await prisma.attendanceRecord.create({
-            data: {
-              employeeId: empId,
-              targetMonth: month,
-              snapshotSalaryGroupId: emp?.salaryGroupId || null
-            },
-            include: {
-              recordValues: true
-            }
-          });
-          recordMap.set(empId, newRec);
-        })
-      );
+      const createPromises = missingEmployeeIds.map(empId => {
+        const emp = employeeMap.get(empId);
+        return prisma.attendanceRecord.create({
+          data: {
+            employeeId: empId,
+            targetMonth: month,
+            snapshotSalaryGroupId: emp?.salaryGroupId || null
+          },
+          include: {
+            recordValues: true
+          }
+        });
+      });
+      // レコードIDを取得するため、先に一括トランザクション実行
+      const newRecords = await prisma.$transaction(createPromises);
+      newRecords.forEach(r => recordMap.set(r.employeeId, r));
     }
 
     const recordUpdates: any[] = [];
@@ -438,15 +438,15 @@ router.post('/save', async (req: Request, res: Response) => {
       }
     }
 
-    // 6. クエリを並列に一括実行（これにより通信の往復遅延を解消）
-    if (recordUpdates.length > 0) {
-      await Promise.all(recordUpdates);
-    }
-    if (auditLogCreates.length > 0) {
-      await Promise.all(auditLogCreates);
-    }
-    if (valueUpserts.length > 0) {
-      await Promise.all(valueUpserts);
+    // 6. クエリを単一のトランザクションセッション内で一括バッチ実行（デッドロック防止と高速化）
+    const writeOperations = [
+      ...recordUpdates,
+      ...auditLogCreates,
+      ...valueUpserts
+    ];
+
+    if (writeOperations.length > 0) {
+      await prisma.$transaction(writeOperations);
     }
 
     res.json({ success: true, message: 'Saved successfully' });
