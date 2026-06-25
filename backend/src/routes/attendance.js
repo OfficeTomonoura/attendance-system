@@ -288,69 +288,85 @@ router.post('/save', async (req, res) => {
         if (!month || !Array.isArray(data)) {
             return res.status(400).json({ error: 'month と data(配列) は必須です' });
         }
-        // トランザクションを外し、通常の順次クエリ実行にする（PgBouncerでの競合回避）
+        const employeeIds = data.map(item => item.employeeId);
+        // 1. 従業員情報を一括取得してMap化
+        const employees = await prisma.employee.findMany({
+            where: { id: { in: employeeIds } }
+        });
+        const employeeMap = new Map(employees.map(e => [e.id, e]));
+        // 2. 月のステータスを取得
         const monthlyStatus = await prisma.monthlyStatus.findUnique({
             where: { targetMonth: month }
         });
         const isApproved = monthlyStatus?.status === 'approved';
+        if (isApproved) {
+            return res.status(400).json({ error: '承認済みのデータは保存できません' });
+        }
+        // 3. 既存の勤怠レコードを一括取得してMap化
+        const records = await prisma.attendanceRecord.findMany({
+            where: {
+                targetMonth: month,
+                employeeId: { in: employeeIds }
+            },
+            include: {
+                recordValues: true
+            }
+        });
+        const recordMap = new Map(records.map(r => [r.employeeId, r]));
+        // 4. 不足している勤怠レコードを特定して一括作成
+        const missingEmployeeIds = employeeIds.filter(empId => !recordMap.has(empId));
+        if (missingEmployeeIds.length > 0) {
+            await Promise.all(missingEmployeeIds.map(async (empId) => {
+                const emp = employeeMap.get(empId);
+                const newRec = await prisma.attendanceRecord.create({
+                    data: {
+                        employeeId: empId,
+                        targetMonth: month,
+                        snapshotSalaryGroupId: emp?.salaryGroupId || null
+                    },
+                    include: {
+                        recordValues: true
+                    }
+                });
+                recordMap.set(empId, newRec);
+            }));
+        }
+        const recordUpdates = [];
+        const auditLogCreates = [];
+        const valueUpserts = [];
+        // 5. データの比較と更新クエリの蓄積
         for (const item of data) {
             const { employeeId, values } = item;
-            // 承認済みの場合は保存をスキップ（またはエラー）
-            if (isApproved) {
+            const record = recordMap.get(employeeId);
+            if (!record)
                 continue;
-            }
-            // 従業員の現在のsalaryGroupIdを取得
-            const employee = await prisma.employee.findUnique({ where: { id: employeeId } });
-            const currentSalaryGroupId = employee?.salaryGroupId || null;
-            let record = await prisma.attendanceRecord.findUnique({
-                where: {
-                    employeeId_targetMonth: {
-                        employeeId,
-                        targetMonth: month,
-                    }
-                }
-            });
-            if (!record) {
-                record = await prisma.attendanceRecord.create({
-                    data: {
-                        employeeId,
-                        targetMonth: month,
-                        snapshotSalaryGroupId: currentSalaryGroupId
-                    }
-                });
-            }
-            else if (record.snapshotSalaryGroupId !== currentSalaryGroupId) {
-                // すでにレコードがある場合でも、保存時は現在のグループにスナップショットを更新する
-                record = await prisma.attendanceRecord.update({
+            const emp = employeeMap.get(employeeId);
+            const currentSalaryGroupId = emp?.salaryGroupId || null;
+            // 給与グループが変更されている場合はスナップショットを更新
+            if (record.snapshotSalaryGroupId !== currentSalaryGroupId) {
+                recordUpdates.push(prisma.attendanceRecord.update({
                     where: { id: record.id },
                     data: { snapshotSalaryGroupId: currentSalaryGroupId }
-                });
+                }));
             }
             if (values && typeof values === 'object') {
+                const existingValueMap = new Map(record.recordValues.map(rv => [rv.attendanceFieldId, rv.value]));
                 for (const [fieldId, val] of Object.entries(values)) {
-                    // AuditLogの記録
-                    const currentVal = await prisma.attendanceRecordValue.findUnique({
-                        where: {
-                            attendanceRecordId_attendanceFieldId: {
-                                attendanceRecordId: record.id,
-                                attendanceFieldId: fieldId
-                            }
-                        }
-                    });
                     const newValStr = (val !== null && val !== undefined && val !== '') ? String(val) : null;
-                    const oldValStr = currentVal?.value || null;
+                    const oldValStr = existingValueMap.get(fieldId) || null;
                     if (newValStr !== oldValStr) {
-                        await prisma.attendanceAuditLog.create({
+                        // 変更履歴のログを作成
+                        auditLogCreates.push(prisma.attendanceAuditLog.create({
                             data: {
                                 attendanceRecordId: record.id,
-                                fieldName: `Field:${fieldId}`, // fieldIdをそのまま入れるかフィールド名を入れるか
+                                fieldName: `Field:${fieldId}`,
                                 oldValue: oldValStr,
                                 newValue: newValStr,
                                 updatedBy: '開発用モックユーザー'
                             }
-                        });
-                        // Upsert
-                        await prisma.attendanceRecordValue.upsert({
+                        }));
+                        // 値のアップサート
+                        valueUpserts.push(prisma.attendanceRecordValue.upsert({
                             where: {
                                 attendanceRecordId_attendanceFieldId: {
                                     attendanceRecordId: record.id,
@@ -365,10 +381,20 @@ router.post('/save', async (req, res) => {
                             update: {
                                 value: newValStr
                             }
-                        });
+                        }));
                     }
                 }
             }
+        }
+        // 6. クエリを並列に一括実行（これにより通信の往復遅延を解消）
+        if (recordUpdates.length > 0) {
+            await Promise.all(recordUpdates);
+        }
+        if (auditLogCreates.length > 0) {
+            await Promise.all(auditLogCreates);
+        }
+        if (valueUpserts.length > 0) {
+            await Promise.all(valueUpserts);
         }
         res.json({ success: true, message: 'Saved successfully' });
     }
