@@ -345,15 +345,37 @@ export default function AttendanceInput() {
           />
         </div>
         <button className="btn-primary" onClick={fetchAttendance} disabled={isEditing || loading}>
-          <Search size={16} style={{ marginRight: '0.5rem' }}/> 検索
+          <Search size={16} style={{ marginRight: '0.5rem' }}/> 
+          {loading ? '検索中...' : '検索'}
         </button>
       </div>
 
       {errorMsg && <div className="alert-error" style={{ marginBottom: '1.5rem' }}><AlertCircle size={16} /> {errorMsg}</div>}
       {successMsg && <div className="alert-error" style={{ marginBottom: '1.5rem', backgroundColor: '#D1FAE5', color: 'var(--success)' }}>{successMsg}</div>}
 
-      {records.length > 0 && (
-        <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+      {loading ? (
+        <div className="card" style={{ padding: '4rem 1.5rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+          <style>{`
+            @keyframes spin {
+              0% { transform: rotate(0deg); }
+              100% { transform: rotate(360deg); }
+            }
+          `}</style>
+          <div style={{
+            display: 'inline-block',
+            width: '28px',
+            height: '28px',
+            border: '3px solid var(--border)',
+            borderTopColor: 'var(--primary)',
+            borderRadius: '50%',
+            animation: 'spin 0.8s linear infinite',
+            marginBottom: '1rem'
+          }}></div>
+          <div style={{ fontSize: '0.95rem', fontWeight: 500 }}>データを読み込み中...</div>
+        </div>
+      ) : (
+        records.length > 0 && (
+          <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
           <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', backgroundColor: 'var(--background)' }}>
             <button
               onClick={() => {
